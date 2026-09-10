@@ -1,0 +1,12 @@
+data
+test-output
+.env*
+server
+scripts
+tests
+docs
+.npm-cache
+.next
+.vinext
+node_modules
+.tools

@@ -1,0 +1,7 @@
+{
+  "framework": null,
+  "buildCommand": "npm run build",
+  "outputDirectory": "dist/client",
+  "cleanUrls": true,
+  "headers": [{"source":"/(.*)","headers":[{"key":"Referrer-Policy","value":"no-referrer"},{"key":"X-Content-Type-Options","value":"nosniff"}]}]
+}
