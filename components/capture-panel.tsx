@@ -1,6 +1,6 @@
 'use client';
 import { useEffect, useRef, useState } from 'react';
-import { Camera, Check, Flag, Mic, ScanLine, Square, Wifi } from 'lucide-react';
+import { Camera, Check, Flag, Mic, ScanLine, Square, SwitchCamera, Wifi } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Choice } from './ourframe-controls';
 import {
@@ -25,7 +25,7 @@ export default function CapturePanel({
 }: {
   session: Session;
   token: string;
-  onSaved: () => void;
+  onSaved: (completed?: Draft) => void;
   onError: (s: string) => void;
   onCaptureChange: (v: boolean) => void;
 }) {
@@ -54,7 +54,8 @@ export default function CapturePanel({
       fps: 0,
     }),
     [now, setNow] = useState(Date.now()),
-    [markCount, setMarkCount] = useState(0);
+    [markCount, setMarkCount] = useState(0),
+    [facing, setFacing] = useState<'environment' | 'user'>('environment');
   const setClockValue = (v: Clock) => {
     clockRef.current = v;
     setClock(v);
@@ -162,7 +163,7 @@ export default function CapturePanel({
     }, 700);
     return () => clearInterval(timer);
   }, [ready]);
-  async function prepare() {
+  async function prepare(nextFacing?: 'environment' | 'user') {
     setArming(true);
     try {
       if (!window.isSecureContext)
@@ -185,7 +186,7 @@ export default function CapturePanel({
       stream.current?.getTracks().forEach((t) => t.stop());
       const captured = await navigator.mediaDevices.getUserMedia({
         video: {
-          facingMode: { ideal: 'environment' },
+          facingMode: { ideal: nextFacing ?? facing },
           width: { ideal: 1920 },
           height: { ideal: 1080 },
           frameRate: { ideal: 30, max: 30 },
@@ -219,6 +220,12 @@ export default function CapturePanel({
     } finally {
       setArming(false);
     }
+  }
+  function flip() {
+    if (recording || arming) return;
+    const next = facing === 'environment' ? 'user' : 'environment';
+    setFacing(next);
+    void prepare(next);
   }
   async function arm() {
     try {
@@ -300,7 +307,7 @@ export default function CapturePanel({
             item.complete = !storageFailed.current;
             item.marks = [...marks.current];
             await saveDraft(item);
-            onSaved();
+            onSaved(item.complete ? { ...item } : undefined);
           })
           .catch((e) => onError(e.message))
           .finally(() => {
@@ -374,7 +381,7 @@ export default function CapturePanel({
     <section className="capture-layout">
       <div>
         <div className={`viewfinder ${recording ? 'is-recording' : ''}`}>
-          <video ref={video} muted playsInline autoPlay />
+          <video ref={video} muted playsInline autoPlay style={{ transform: facing === 'user' ? 'scaleX(-1)' : undefined }} />
           <div className="finder-corners" />
           {!ready && (
             <div className="camera-empty">
@@ -385,7 +392,7 @@ export default function CapturePanel({
                 <br />
                 then let the host start the take.
               </p>
-              <Button className="action" disabled={arming} onClick={prepare}>
+              <Button className="action" disabled={arming} onClick={() => void prepare()}>
                 {arming ? 'Opening camera…' : 'Enable camera'} <Camera />
               </Button>
             </div>
@@ -414,6 +421,18 @@ export default function CapturePanel({
           {countdown && ready && <div className="countdown">{countdown}</div>}
         </div>
         <div className="camera-actions">
+          {ready && !recording && (
+            <Button
+              variant="outline"
+              className="action"
+              disabled={arming || saving}
+              onClick={flip}
+              aria-label="Switch between rear and front camera"
+            >
+              <SwitchCamera />
+              {facing === 'environment' ? 'Use front camera' : 'Use rear camera'}
+            </Button>
+          )}
           {ready && !recording && (
             <Button
               className="action"

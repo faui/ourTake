@@ -47,6 +47,10 @@ const allowed = new Set(
 );
 const uploadLocks = new Set(),
   rates = new Map();
+// Operator console: one line per session milestone so field-test progress is
+// visible in the worker terminal. Never log tokens, invites, or paths.
+const milestone = (msg) =>
+  console.log(`[${new Date().toLocaleTimeString('en-GB')}] \u25B8 ${msg}`);
 let rendering = false;
 function fail(status, message) {
   throw Object.assign(new Error(message), { status });
@@ -247,6 +251,7 @@ async function handler(req, res) {
         };
       db.put('session', s);
       const { m, credential } = makeMember(s.id, b.displayName, 'host');
+      milestone(`session "${s.name}" created by ${m.name} (${s.sport})`);
       return send(res, 201, { session: snapshot(s, m), token: credential });
     }
     if (method === 'POST' && url.pathname === '/api/join') {
@@ -260,6 +265,7 @@ async function handler(req, res) {
       if (db.list('member', s.id).length >= 20)
         fail(409, 'This pilot session already has 20 participants.');
       const { m, credential } = makeMember(s.id, b.displayName, 'guest');
+      milestone(`${m.name} joined "${s.name}" (${db.list('member', s.id).length} participants)`);
       return send(res, 201, { session: snapshot(s, m), token: credential });
     }
     if (parts[0] === 'api' && parts[1] === 'sessions' && parts[2]) {
@@ -295,10 +301,12 @@ async function handler(req, res) {
           s.stopAt = null;
           s.take++;
           s.armedIds = ready.map((x) => x.id);
+          milestone(`take ${s.take} starting in 8s on "${s.name}" with ${ready.length} camera(s)`);
         } else if (b.action === 'stop') {
           if (s.status !== 'recording') fail(409, 'No take is recording.');
           s.stopAt = Date.now() + 1500;
           s.status = 'stopped';
+          milestone(`take ${s.take} stopped on "${s.name}" \u2014 waiting for uploads`);
         } else fail(400, 'Unknown control action.');
         db.put('session', s);
         return send(res, 200, snapshot(s, m));
@@ -478,6 +486,7 @@ async function handler(req, res) {
         };
         db.put('job', j);
         void work();
+        milestone(`edit queued: take ${j.takeNumber} (${j.style}, ${j.aspect}, ${j.scope})`);
         return send(res, 202, j);
       }
       if (method === 'DELETE' && !action) {
@@ -505,6 +514,7 @@ async function handler(req, res) {
             db.delete(kind, row.id);
           }
         db.delete('session', s.id);
+        milestone(`session "${s.name}" deleted by host \u2014 media removed`);
         return send(res, 200, { deleted: true });
       }
     }
@@ -563,6 +573,7 @@ async function handler(req, res) {
           db.put('clip', c);
           u.status = 'complete';
           db.put('upload', u);
+          milestone(`upload complete: "${c.name}" (${Math.round(info.duration)}s, ${Math.round(u.size / 1024 ** 2)} MB) \u2014 ${db.list('clip', u.sessionId).length} clip(s) in session`);
           const { path, ...safe } = c;
           return send(res, 201, {
             ...safe,
@@ -705,6 +716,7 @@ async function work() {
   rendering = true;
   job.status = 'rendering';
   db.put('job', job);
+  milestone(`rendering take ${job.takeNumber} (${job.style})\u2026`);
   try {
     const reserved =
       db.list('upload').reduce((sum, u) => sum + u.size, 0) +
@@ -734,6 +746,7 @@ async function work() {
       finishedAt: Date.now(),
     });
     db.put('job', job);
+    milestone(`render done: take ${job.takeNumber} (${Math.round(job.duration)}s MP4 ready)`);
   } catch (e) {
     console.error('Render failed:', e.message);
     job.status = 'failed';
