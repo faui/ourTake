@@ -47,3 +47,4 @@ next-env.d.ts
 
 # Field-test TLS material (local CA + worker cert) - never commit
 /certs/
+certs*.zip
