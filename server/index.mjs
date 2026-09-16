@@ -170,7 +170,11 @@ async function handler(req, res) {
     res.setHeader('Permissions-Policy', 'camera=(self), microphone=(self)');
     const origin = req.headers.origin;
     if (origin) {
-      if (!allowed.has(origin))
+      // Browsers send Origin on same-origin module-script and CORS-mode requests
+      // too; rejecting those turns the app into a rendered-but-dead page. A
+      // request whose Origin host matches the Host it arrived on is same-origin.
+      const sameHost = origin.replace(/^https?:\/\//, '') === req.headers.host;
+      if (!allowed.has(origin) && !sameHost)
         fail(
           403,
           'This frontend origin is not allowed. Configure ALLOWED_ORIGINS on the worker.',
