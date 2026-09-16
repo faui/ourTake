@@ -44,3 +44,6 @@ next-env.d.ts
 
 .vercel
 .tools/
+
+# Field-test TLS material (local CA + worker cert) - never commit
+/certs/

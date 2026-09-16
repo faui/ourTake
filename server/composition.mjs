@@ -87,7 +87,10 @@ export async function renderComposition(job,clips,folder,onProgress=()=>{}) {
  }
  const list=join(folder,'concat.txt');await writeFile(list,parts.map((_,i)=>`file 'part-${i}.mp4'`).join('\n'));
  const output=join(folder,'ourframe.mp4');
- await run(process.env.FFMPEG_PATH||'ffmpeg',['-y','-v','error','-f','concat','-safe','1','-i',list,'-c','copy','-movflags','+faststart',output]);
+ // ffmpeg's concat demuxer resolves relative entries against the list's directory
+ // but only recognizes '/' as the separator; a backslash Windows path makes it
+ // resolve against the process cwd instead and every entry fails with ENOENT.
+ await run(process.env.FFMPEG_PATH||'ffmpeg',['-y','-v','error','-f','concat','-safe','1','-i',list.replaceAll('\\','/'),'-c','copy','-movflags','+faststart',output]);
  const info=await probe(output);await Promise.all(parts.map(path=>rm(path,{force:true})));await rm(list,{force:true});
  return {path:output,...info,plan};
 }

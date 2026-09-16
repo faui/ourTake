@@ -150,3 +150,12 @@ Use direct actions: “Enable camera,” “My framing is ready,” “Start all
 ## Naming validation
 
 The masterbrand decision is **ourTake**; do not reopen the earlier candidate-name contest by default. Test how people say, spell, and recall it, and whether invitations communicate the product. Trademark/domain clearance remains outstanding. Existing OurFrame labels identify implementation debt rather than an active competing brand choice.
+
+## Working selection — 16 September 2026
+
+Founder-delegated selection after rounds 01–03 and end-customer QA (lineage in `docs/brand-exploration/round-02/NOTES.md` and `round-03/NOTES.md`):
+
+- **Primary mark: f · T through O** (solid master; micro variant ≤24 px). It alone encodes the name (O + T), the noun (T = a take), and the mechanic (one take threaded through the group's ring). The ribbon variant is reserved for large display moments; the round-03 closure mark is archived.
+- **Color system:** unified tokens — violet-blue `#3B3BE6` (light) / `#8A8AF8` (dark), coral `#EA531E` (light) / `#FF6B35` (dark), cyan `#00F2FE` scoped to dark surfaces and violet fields. Contrast documentation on the round-02 board.
+- **Applied to the runtime** (2026-09-16): `public/ourtake-mark.svg` + `public/favicon.svg` (ink tile, dark tokens), manifest and layout icons, masthead mark. Full UI token migration and the marketing site remain scheduled after the field test.
+- **Mitigation rule (from QA):** at first encounters the symbol always appears with the `ourTake` wordmark. Trademark screening (incl. transit-style T-in-circle marks) still outstanding.
