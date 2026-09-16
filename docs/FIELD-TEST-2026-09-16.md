@@ -70,7 +70,8 @@ Estimated playback alignment, not exposure sync; keep pages foregrounded during 
 
 ## Recovery quick reference
 
-- Phone shows certificate warning → the CA wasn't fully trusted (iPhone: Certificate Trust Settings toggle; Pixel: must be installed as *CA certificate*, not VPN/app cert).
+- Phone gets "site can't be reached" on 8899 or 4100 → work through, in order: (1) the CA helper is its own process — run `node scripts/serve-field-ca.mjs` in a second terminal (the worker on 4100 doesn't serve 8899); (2) Windows Firewall blocks inbound Node on hotspot (Public) networks — from an **admin** PowerShell: `netsh advfirewall firewall add rule name="ourTake field (4100,8899)" dir=in action=allow protocol=TCP localport=4100,8899 profile=any` (delete the rule after the pilot); (3) confirm the hotspot IP with `ipconfig` (the `Local Area Connection*` adapter) and that the phone is actually on the hotspot SSID — phones silently fall back to cellular on internet-less networks. Isolation test: open `http://192.168.137.1:8899/` on the laptop itself — if the laptop can reach it but phones can't, it's the firewall.
+- Phone shows certificate warning → networking is FINE; the CA just isn't trusted yet (iPhone: Certificate Trust Settings toggle; Pixel: must be installed as *CA certificate*, not VPN/app cert).
 - "Worker offline" on phones → confirm phone is on the hotspot and the URL uses the exact IP; check the worker terminal is still running.
 - Upload stuck → leave the tab open; it resumes with server-acknowledged offsets. Do not clear the browser's site data.
 - Render fails → check ffmpeg is on PATH in the worker terminal (`ffmpeg -version`); failed takes keep their number and can be retried.
