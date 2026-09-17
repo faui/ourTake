@@ -55,6 +55,7 @@ export type Session = {
   take: number;
   startAt: number | null;
   stopAt: number | null;
+  allowAllDownloads?: boolean;
   armedIds?: string[];
   invite?: string;
   self: Member;
@@ -392,4 +393,77 @@ export async function uploadDraft(
   }
   await api(`/uploads/${upload.id}/complete`, token, 'POST', {});
   return upload.id;
+}
+
+// Live upload: relay recorder chunks to the worker while recording continues,
+// so footage reaches the host during the take instead of afterwards. The
+// IndexedDB spool remains the source of truth: on any failure this uploader
+// goes quiet and the ordinary uploadDraft path resumes from the server's
+// acknowledged offset (uploads are idempotent by clientId).
+export function startLiveUpload(draft: Draft, token: string) {
+  let uploadId = '',
+    offset = 0,
+    dead = false;
+  let chain: Promise<void> = api(
+    `/sessions/${draft.sessionId}/uploads`,
+    token,
+    'POST',
+    {
+      clientId: draft.id,
+      name: draft.name,
+      mime: draft.mime,
+      startTime: draft.startTime,
+      clockError: draft.clockError,
+    },
+  ).then((u) => {
+    uploadId = u.id;
+    offset = u.offset;
+  });
+  async function put(part: ArrayBuffer) {
+    for (let attempt = 0; ; attempt++) {
+      const res = await fetch(base() + `/api/uploads/${uploadId}`, {
+        method: 'PUT',
+        headers: {
+          Authorization: 'Bearer ' + token,
+          'Content-Type': 'application/octet-stream',
+          'X-Upload-Offset': String(offset),
+        },
+        body: part,
+      });
+      const result = (await res.json()) as { error?: string; offset: number };
+      if (res.ok) {
+        offset = result.offset;
+        return;
+      }
+      if (attempt >= 1) throw new Error(result.error);
+      offset = (await api(`/uploads/${uploadId}`, token)).offset;
+    }
+  }
+  return {
+    get dead() {
+      return dead;
+    },
+    append(blob: Blob) {
+      if (dead) return;
+      chain = chain
+        .then(async () => {
+          const bytes = await blob.arrayBuffer();
+          for (let o = 0; o < bytes.byteLength; o += 2 * 1024 ** 2)
+            await put(bytes.slice(o, o + 2 * 1024 ** 2));
+        })
+        .catch(() => {
+          dead = true;
+        });
+    },
+    async finish(marks: number[], clockAnchors: Draft['clockAnchors']) {
+      await chain;
+      if (dead || !uploadId)
+        throw new Error('Live upload fell behind; the saved take will upload normally.');
+      await api(`/uploads/${uploadId}/complete`, token, 'POST', {
+        marks,
+        clockAnchors,
+      });
+      return uploadId;
+    },
+  };
 }

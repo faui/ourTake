@@ -111,13 +111,13 @@ function publicMember(m) {
   const { tokenHash, ...rest } = m;
   return rest;
 }
-function mediaUrl(kind, id, sessionId) {
+function mediaUrl(kind, id, sessionId, memberId = '') {
   const expires = (Math.floor(Date.now() / 3600000) + 2) * 3600000,
-    payload = `${kind}:${id}:${sessionId}:${expires}`,
+    payload = `${kind}:${id}:${sessionId}:${memberId}:${expires}`,
     signature = createHmac('sha256', secret)
       .update(payload)
       .digest('base64url');
-  return `/api/media/${kind}/${id}?session=${sessionId}&expires=${expires}&signature=${signature}`;
+  return `/api/media/${kind}/${id}?session=${sessionId}&member=${memberId}&expires=${expires}&signature=${signature}`;
 }
 function snapshot(s, m) {
   const { inviteHash, invite, ...safe } = s;
@@ -128,12 +128,12 @@ function snapshot(s, m) {
     members: db.list('member', s.id).map(publicMember),
     clips: db
       .list('clip', s.id)
-      .map(({ path, ...c }) => ({ ...c, url: mediaUrl('clip', c.id, s.id) })),
+      .map(({ path, ...c }) => ({ ...c, url: mediaUrl('clip', c.id, s.id, m.id) })),
     jobs: db
       .list('job', s.id)
       .map(({ path, ...j }) => ({
         ...j,
-        url: j.status === 'done' ? mediaUrl('job', j.id, s.id) : undefined,
+        url: j.status === 'done' ? mediaUrl('job', j.id, s.id, m.id) : undefined,
       })),
   };
 }
@@ -147,6 +147,23 @@ function rate(req) {
   }
   if (++r.count > 30) fail(429, 'Please wait a minute before trying again.');
   if (rates.size > 10000) rates.clear();
+}
+function parseMarks(value) {
+  return Array.isArray(value)
+    ? value.slice(0, 200).map((n) => number(n, 0, 7200))
+    : [];
+}
+function parseAnchors(value) {
+  return Array.isArray(value)
+    ? value.slice(0, 300).map((a) => ({
+        sequence: number(a.sequence, 0, 10000),
+        elapsedMs: number(a.elapsedMs, 0, 7400000),
+        offset: number(a.offset, -86400000, 86400000),
+        roundTrip: number(a.roundTrip, 0, 120000),
+        measuredAt: number(a.measuredAt, 0, Date.now() + 86400000),
+        evidence: 'recorder-callback-clock-estimate',
+      }))
+    : undefined;
 }
 function makeMember(sessionId, name, role) {
   const credential = token(),
@@ -243,6 +260,7 @@ async function handler(req, res) {
           collection: text(b.collection || 'Practice sessions'),
           createdAt: Date.now(),
           status: 'setup',
+          allowAllDownloads: false,
           take: 0,
           startAt: null,
           stopAt: null,
@@ -302,6 +320,13 @@ async function handler(req, res) {
           s.take++;
           s.armedIds = ready.map((x) => x.id);
           milestone(`take ${s.take} starting in 8s on "${s.name}" with ${ready.length} camera(s)`);
+        } else if (b.action === 'downloads') {
+          if (typeof b.allowAll !== 'boolean')
+            fail(400, 'Send allowAll true or false.');
+          s.allowAllDownloads = b.allowAll;
+          milestone(
+            `downloads ${s.allowAllDownloads ? 'opened to all participants' : 'restricted to own footage'} on "${s.name}"`,
+          );
         } else if (b.action === 'stop') {
           if (s.status !== 'recording') fail(409, 'No take is recording.');
           s.stopAt = Date.now() + 1500;
@@ -331,15 +356,17 @@ async function handler(req, res) {
             offset: prior.offset,
             status: prior.status,
           });
-        const size = number(b.size, 1, maxFile);
-        if (!Number.isInteger(size)) fail(400, 'Invalid file size.');
+        // Streaming captures upload while recording: size is unknown until stop.
+        const size = b.size == null ? null : number(b.size, 1, maxFile);
+        if (size !== null && !Number.isInteger(size))
+          fail(400, 'Invalid file size.');
         const reserved =
-          db.list('upload').reduce((v, u) => v + u.size, 0) +
+          db.list('upload').reduce((v, u) => v + (u.size ?? u.offset), 0) +
           db
             .list('job')
             .filter((j) => j.path && existsSync(j.path))
             .reduce((v, j) => v + statSync(j.path).size, 0);
-        if (reserved + size > maxStorage)
+        if (reserved + (size ?? 256 * 1024 ** 2) > maxStorage)
           fail(
             507,
             'Pilot storage budget reached. Ask the host to export and remove old sessions.',
@@ -356,25 +383,14 @@ async function handler(req, res) {
             startTime: number(b.startTime, 0, Date.now() + 86400000),
             clockError:
               b.clockError == null ? null : number(b.clockError, 0, 60000),
-            marks: Array.isArray(b.marks)
-              ? b.marks.slice(0, 200).map((n) => number(n, 0, 7200))
-              : [],
+            marks: parseMarks(b.marks),
             offset: 0,
             status: 'uploading',
             createdAt: Date.now(),
             path: join(data, 'media', `${id}.source`),
           };
-        if (Array.isArray(b.clockAnchors))
-          u.clockAnchors = b.clockAnchors
-            .slice(0, 300)
-            .map((a) => ({
-              sequence: number(a.sequence, 0, 10000),
-              elapsedMs: number(a.elapsedMs, 0, 7400000),
-              offset: number(a.offset, -86400000, 86400000),
-              roundTrip: number(a.roundTrip, 0, 120000),
-              measuredAt: number(a.measuredAt, 0, Date.now() + 86400000),
-              evidence: 'recorder-callback-clock-estimate',
-            }));
+        const anchors = parseAnchors(b.clockAnchors);
+        if (anchors) u.clockAnchors = anchors;
         writeFileSync(u.path, Buffer.alloc(0));
         db.put('upload', u);
         return send(res, 201, { id, offset: 0, status: u.status });
@@ -531,7 +547,7 @@ async function handler(req, res) {
       if (method === 'PUT') {
         if (u.status !== 'uploading')
           fail(409, 'This upload is already complete.');
-        const offset = number(req.headers['x-upload-offset'], 0, u.size);
+        const offset = number(req.headers['x-upload-offset'], 0, u.size ?? maxFile);
         if (offset !== u.offset)
           fail(
             409,
@@ -540,7 +556,7 @@ async function handler(req, res) {
         uploadLocks.add(u.id);
         try {
           const chunk = await body(req, 2 * 1024 ** 2);
-          if (!chunk.length || u.offset + chunk.length > u.size)
+          if (!chunk.length || u.offset + chunk.length > (u.size ?? maxFile))
             fail(400, 'Unexpected upload length.');
           if (statSync(u.path).size !== u.offset)
             fail(409, 'Upload storage length mismatch.');
@@ -556,6 +572,14 @@ async function handler(req, res) {
         if (u.status === 'complete') {
           const { path, ...safe } = db.get('clip', u.id);
           return send(res, 200, safe);
+        }
+        const late = await json(req).catch(() => ({}));
+        if (u.size === null) {
+          if (!u.offset) fail(409, 'No video data was received for this take.');
+          u.size = u.offset;
+          if (Array.isArray(late.marks)) u.marks = parseMarks(late.marks);
+          const anchors = parseAnchors(late.clockAnchors);
+          if (anchors) u.clockAnchors = anchors;
         }
         if (u.offset !== u.size) fail(409, 'Upload is not complete yet.');
         uploadLocks.add(u.id);
@@ -615,6 +639,7 @@ async function handler(req, res) {
     if (parts[0] === 'api' && parts[1] === 'media' && parts[2] && parts[3]) {
       const [kind, id] = parts.slice(2),
         sessionId = url.searchParams.get('session'),
+        memberId = url.searchParams.get('member') || '',
         expires = url.searchParams.get('expires'),
         sig = url.searchParams.get('signature') || '';
       if (
@@ -624,7 +649,7 @@ async function handler(req, res) {
       )
         fail(403, 'Media link expired. Reopen the session.');
       const expected = createHmac('sha256', secret)
-        .update(`${kind}:${id}:${sessionId}:${expires}`)
+        .update(`${kind}:${id}:${sessionId}:${memberId}:${expires}`)
         .digest('base64url');
       if (
         sig.length !== expected.length ||
@@ -639,6 +664,21 @@ async function handler(req, res) {
         !existsSync(record.path)
       )
         fail(404, 'Media unavailable.');
+      // Download policy: participants save their own originals; everyone's
+      // originals only when the host allows it. Editions stay shared output.
+      if (kind === 'clip' && url.searchParams.has('download')) {
+        const owner = db.get('session', sessionId),
+          viewer = db.get('member', memberId);
+        if (
+          !viewer ||
+          !(
+            viewer.role === 'host' ||
+            record.ownerId === viewer.id ||
+            owner?.allowAllDownloads
+          )
+        )
+          fail(403, 'The host has not enabled downloading all footage.');
+      }
       const size = statSync(record.path).size,
         range = req.headers.range;
       let start = 0,

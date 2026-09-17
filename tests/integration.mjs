@@ -183,6 +183,77 @@ try {
   assert.ok(c.duration >= 5);
   assert.equal(c.path, undefined);
   assert.equal(c.clockAnchors[0].evidence,'recorder-callback-clock-estimate');
+  // Streaming upload: size unknown at create, chunks relayed during recording,
+  // marks and clock anchors delivered at completion.
+  const su = await request(
+    `/sessions/${s}/uploads`,
+    guest.token,
+    'POST',
+    { clientId: 'test-stream-001', name: 'Streamed', mime: 'video/mp4', startTime: Date.now() },
+    201,
+  );
+  for (let offset = 0; offset < bytes.length; offset += 100000) {
+    const chunk = bytes.subarray(offset, offset + 100000);
+    const result = await fetch(base + `/api/uploads/${su.id}`, {
+      method: 'PUT',
+      headers: {
+        Authorization: 'Bearer ' + guest.token,
+        'X-Upload-Offset': String(offset),
+      },
+      body: chunk,
+    });
+    assert.equal(result.status, 200);
+  }
+  const sc = await request(
+    `/uploads/${su.id}/complete`,
+    guest.token,
+    'POST',
+    {
+      marks: [1.5],
+      clockAnchors: [
+        { sequence: 1, elapsedMs: 500, offset: 2, roundTrip: 9, measuredAt: Date.now() },
+      ],
+    },
+    201,
+  );
+  assert.ok(sc.duration >= 5);
+  assert.equal(sc.marks[0], 1.5);
+  assert.equal(sc.clockAnchors[0].evidence, 'recorder-callback-clock-estimate');
+  // Download policy: owners and the host may download originals; other
+  // participants only after the host opens downloads for everyone.
+  const viewer = await request(
+    '/join',
+    null,
+    'POST',
+    { invite: host.session.invite, displayName: 'Viewer', consent: true },
+    201,
+  );
+  const viewerClip = (await request(`/sessions/${s}`, viewer.token)).clips.find(
+    (x) => x.id === sc.id,
+  );
+  const ownerClip = (await request(`/sessions/${s}`, guest.token)).clips.find(
+    (x) => x.id === sc.id,
+  );
+  assert.equal((await fetch(base + viewerClip.url)).status, 200);
+  assert.equal((await fetch(base + viewerClip.url + '&download=1')).status, 403);
+  assert.equal((await fetch(base + ownerClip.url + '&download=1')).status, 200);
+  await request(
+    `/sessions/${s}/control`,
+    viewer.token,
+    'POST',
+    { action: 'downloads', allowAll: true },
+    403,
+  );
+  await request(`/sessions/${s}/control`, host.token, 'POST', {
+    action: 'downloads',
+    allowAll: true,
+  });
+  assert.equal((await fetch(base + viewerClip.url + '&download=1')).status, 200);
+  await request(`/sessions/${s}/control`, host.token, 'POST', {
+    action: 'downloads',
+    allowAll: false,
+  });
+  assert.equal((await fetch(base + viewerClip.url + '&download=1')).status, 403);
   await request(
     `/sessions/${s}/compose`,
     host.token,

@@ -9,6 +9,7 @@
     "dev": "vinext dev",
     "build": "vinext build",
     "start": "node --env-file-if-exists=.env.local server/index.mjs",
+    "start:tunnel": "node --env-file=.env.tunnel server/index.mjs",
     "lint": "oxlint",
     "format": "oxfmt",
     "worker": "node --env-file-if-exists=.env.local server/index.mjs",

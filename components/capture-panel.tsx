@@ -13,6 +13,7 @@ import {
   saveDraft,
   Session,
   sessionNow,
+  startLiveUpload,
   syncClock,
 } from '@/lib/ourframe';
 
@@ -39,6 +40,7 @@ export default function CapturePanel({
     startTimer = useRef<ReturnType<typeof setTimeout> | null>(null),
     armedRef = useRef(false),
     storageFailed = useRef(false),
+    live = useRef<ReturnType<typeof startLiveUpload> | null>(null),
     marks = useRef<number[]>([]);
   const [ready, setReady] = useState(false),
     [recording, setRecording] = useState(false),
@@ -277,6 +279,9 @@ export default function CapturePanel({
       };
       draft.current = item;
       await saveDraft(item);
+      // Footage streams to the worker during the take; the local spool stays
+      // the source of truth and is removed only after the server confirms.
+      live.current = startLiveUpload(item, token);
       pending.current = Promise.resolve();
       r.onstart = () => {
         item.startTime = sessionNow(clockRef.current);
@@ -286,6 +291,7 @@ export default function CapturePanel({
       };
       r.ondataavailable = (e) => {
         if (e.data.size) {
+          live.current?.append(e.data);
           const current = index++;
           pending.current = pending.current
             .then(() => saveChunk(item.id, current, e.data))
@@ -307,6 +313,16 @@ export default function CapturePanel({
             item.complete = !storageFailed.current;
             item.marks = [...marks.current];
             await saveDraft(item);
+            try {
+              const id = await live.current?.finish(item.marks, item.clockAnchors);
+              if (id) {
+                item.uploadId = id;
+                await saveDraft(item);
+              }
+            } catch {
+              // Live relay fell behind or failed; the spooled take uploads
+              // through the ordinary resumable path afterwards.
+            }
             onSaved(item.complete ? { ...item } : undefined);
           })
           .catch((e) => onError(e.message))
