@@ -39,6 +39,7 @@ export default function CapturePanel({
     processedTake = useRef(0),
     startTimer = useRef<ReturnType<typeof setTimeout> | null>(null),
     armedRef = useRef(false),
+    autoStart = useRef(false),
     storageFailed = useRef(false),
     live = useRef<ReturnType<typeof startLiveUpload> | null>(null),
     marks = useRef<number[]>([]);
@@ -57,6 +58,7 @@ export default function CapturePanel({
     }),
     [now, setNow] = useState(Date.now()),
     [markCount, setMarkCount] = useState(0),
+    [armedUi, setArmedUi] = useState(false),
     [facing, setFacing] = useState<'environment' | 'user'>('environment');
   const setClockValue = (v: Clock) => {
     clockRef.current = v;
@@ -103,6 +105,16 @@ export default function CapturePanel({
   useEffect(() => {
     const t = setInterval(() => setNow(sessionNow(clockRef.current)), 200);
     return () => clearInterval(t);
+  }, []);
+  // Zero-click flow: the camera opens as soon as the capture panel appears
+  // (the browser's own permission prompt is the only gate) and the phone
+  // arms itself once the preview is live. The buttons below become toggles.
+  useEffect(() => {
+    if (!autoStart.current) {
+      autoStart.current = true;
+      void prepare();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
   useEffect(() => {
     const t = setInterval(() => {
@@ -206,6 +218,7 @@ export default function CapturePanel({
       }
       captured.getVideoTracks()[0].onended = () => {
         armedRef.current = false;
+        setArmedUi(false);
         setReady(false);
         if (recorder.current?.state === 'recording') recorder.current.stop();
         onError('Camera stopped. Any saved take remains in On this device.');
@@ -215,6 +228,7 @@ export default function CapturePanel({
       };
       setReady(true);
       armedRef.current = false;
+      void arm();
       // Storage permission is optional; never claim that the OS guarantees persistence.
       void navigator.storage?.persist?.().catch(() => {});
     } catch (e) {
@@ -222,6 +236,23 @@ export default function CapturePanel({
     } finally {
       setArming(false);
     }
+  }
+  async function disarm() {
+    armedRef.current = false;
+    setArmedUi(false);
+    try {
+      await api(`/sessions/${session.id}/self`, token, 'PATCH', { armed: false });
+    } catch (e) {
+      onError((e as Error).message);
+    }
+  }
+  function cameraOff() {
+    stream.current?.getTracks().forEach((t) => t.stop());
+    stream.current = null;
+    setReady(false);
+    armedRef.current = false;
+    setArmedUi(false);
+    void api(`/sessions/${session.id}/self`, token, 'PATCH', { armed: false }).catch(() => {});
   }
   function flip() {
     if (recording || arming) return;
@@ -238,6 +269,7 @@ export default function CapturePanel({
         clockError: measured.error,
       });
       armedRef.current = true;
+      setArmedUi(true);
       setNow(sessionNow(measured));
     } catch (e) {
       onError((e as Error).message);
@@ -329,6 +361,7 @@ export default function CapturePanel({
           .finally(() => {
             setSaving(false);
             armedRef.current = false;
+            setArmedUi(false);
             void api(`/sessions/${session.id}/self`, token, 'PATCH', {
               armed: false,
             }).catch(() => {});
@@ -418,7 +451,7 @@ export default function CapturePanel({
               <div className="finder-top">
                 <span className="glass-label">
                   <i className={recording ? 'red-dot' : 'green-dot'} />
-                  {recording ? 'REC' : armedRef.current ? 'READY' : 'PREVIEW'}
+                  {recording ? 'REC' : armedUi ? 'READY' : 'PREVIEW'}
                 </span>
                 <span className="glass-label">
                   {stats.width} × {stats.height} · {Math.round(stats.fps)} FPS
@@ -452,15 +485,25 @@ export default function CapturePanel({
           {ready && !recording && (
             <Button
               className="action"
-              disabled={arming || saving || armedRef.current}
-              onClick={arm}
+              disabled={arming || saving}
+              onClick={() => void (armedUi ? disarm() : arm())}
             >
               <Check />
               {saving
                 ? 'Saving take…'
-                : armedRef.current
-                  ? 'Ready for host'
-                  : 'My framing is ready'}
+                : armedUi
+                  ? 'Ready — tap to hold'
+                  : "I'm ready"}
+            </Button>
+          )}
+          {ready && !recording && (
+            <Button
+              variant="outline"
+              className="action"
+              disabled={arming || saving}
+              onClick={cameraOff}
+            >
+              <Square /> Camera off
             </Button>
           )}
           {recording && (

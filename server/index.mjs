@@ -122,7 +122,7 @@ function member(req, id) {
   return m;
 }
 function publicMember(m) {
-  const { tokenHash, ...rest } = m;
+  const { tokenHash, deviceId, ...rest } = m;
   return rest;
 }
 function mediaUrl(kind, id, sessionId, memberId = '') {
@@ -179,13 +179,14 @@ function parseAnchors(value) {
       }))
     : undefined;
 }
-function makeMember(sessionId, name, role) {
+function makeMember(sessionId, name, role, deviceId = null) {
   const credential = token(),
     m = {
       id: randomUUID(),
       sessionId,
       name: text(name),
       role,
+      deviceId,
       tokenHash: hash(credential),
       joinedAt: Date.now(),
       lastSeen: Date.now(),
@@ -282,7 +283,12 @@ async function handler(req, res) {
           inviteHash: hash(invite),
         };
       db.put('session', s);
-      const { m, credential } = makeMember(s.id, b.displayName, 'host');
+      const { m, credential } = makeMember(
+        s.id,
+        b.displayName,
+        'host',
+        b.deviceId ? text(b.deviceId, 8, 100) : null,
+      );
       milestone(`session "${s.name}" created by ${m.name} (${s.sport})`);
       event('session_created', { sessionId: s.id, sport: s.sport, ua: req.headers['user-agent'] });
       return send(res, 201, { session: snapshot(s, m), token: credential });
@@ -297,7 +303,32 @@ async function handler(req, res) {
       if (!s) fail(404, 'This invitation is invalid or has been replaced.');
       if (db.list('member', s.id).length >= 20)
         fail(409, 'This pilot session already has 20 participants.');
-      const { m, credential } = makeMember(s.id, b.displayName, 'guest');
+      // Same physical device re-scanning the invite resumes its existing
+      // membership (fresh credential) instead of creating a duplicate person.
+      const deviceId = b.deviceId ? text(b.deviceId, 8, 100) : null;
+      if (deviceId) {
+        const existing = db
+          .list('member', s.id)
+          .find((x) => x.deviceId === deviceId);
+        if (existing) {
+          const credential = token();
+          existing.tokenHash = hash(credential);
+          existing.name = text(b.displayName);
+          existing.lastSeen = Date.now();
+          db.put('member', existing);
+          milestone(`${existing.name} rejoined "${s.name}" from the same device`);
+          event('member_rejoined', {
+            sessionId: s.id,
+            memberId: existing.id,
+            ua: req.headers['user-agent'],
+          });
+          return send(res, 201, {
+            session: snapshot(s, existing),
+            token: credential,
+          });
+        }
+      }
+      const { m, credential } = makeMember(s.id, b.displayName, 'guest', deviceId);
       milestone(`${m.name} joined "${s.name}" (${db.list('member', s.id).length} participants)`);
       event('member_joined', { sessionId: s.id, memberId: m.id, participants: db.list('member', s.id).length, ua: req.headers['user-agent'] });
       return send(res, 201, { session: snapshot(s, m), token: credential });

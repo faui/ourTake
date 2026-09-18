@@ -254,6 +254,27 @@ try {
     allowAll: false,
   });
   assert.equal((await fetch(base + viewerClip.url + '&download=1')).status, 403);
+  // Same device re-scanning the invite resumes the same member (no duplicates)
+  // and receives a fresh credential that replaces the old one.
+  const devA = await request(
+    '/join',
+    null,
+    'POST',
+    { invite: host.session.invite, displayName: 'DevSame', consent: true, deviceId: 'device-test-0001' },
+    201,
+  );
+  const memberCount = (await request(`/sessions/${s}`, devA.token)).members.length;
+  const devB = await request(
+    '/join',
+    null,
+    'POST',
+    { invite: host.session.invite, displayName: 'DevSame', consent: true, deviceId: 'device-test-0001' },
+    201,
+  );
+  assert.equal(devB.session.self.id, devA.session.self.id);
+  assert.equal(devB.session.members.length, memberCount);
+  await request(`/sessions/${s}`, devA.token, 'GET', null, 403);
+  await request(`/sessions/${s}`, devB.token);
   await request(
     `/sessions/${s}/compose`,
     host.token,

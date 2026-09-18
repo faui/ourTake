@@ -64,6 +64,21 @@ export type Session = {
   jobs: Job[];
 };
 export type Membership = { id: string; name: string; token: string };
+
+// Stable per-browser identifier so re-scanning an invite resumes the same
+// membership instead of creating a duplicate participant. Random, local-only.
+export function deviceId() {
+  try {
+    let v = localStorage.getItem('ourframe.device');
+    if (!v) {
+      v = crypto.randomUUID();
+      localStorage.setItem('ourframe.device', v);
+    }
+    return v;
+  } catch {
+    return undefined;
+  }
+}
 export const activities: Record<
   Activity,
   { label: string; hint: string; positions: string[] }
