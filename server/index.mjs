@@ -784,10 +784,12 @@ async function handler(req, res) {
       !file.startsWith(staticRoot + '/')
     )
       fail(403, 'Invalid path.');
+    // Clean URLs like Vercel: /player -> player.html (or player/index.html)
+    // before falling back to the app shell. All candidates stay under staticRoot.
+    const candidates = [file, `${file}.html`, join(file, 'index.html')];
     const target =
-      existsSync(file) && statSync(file).isFile()
-        ? file
-        : join(staticRoot, 'index.html');
+      candidates.find((f) => existsSync(f) && statSync(f).isFile()) ||
+      join(staticRoot, 'index.html');
     if (!existsSync(target))
       fail(
         404,
