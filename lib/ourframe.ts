@@ -187,7 +187,10 @@ export async function api(
     );
   }
   if (!response.ok)
-    throw new Error(value.error || 'This request could not finish.');
+    throw Object.assign(
+      new Error(value.error || 'This request could not finish.'),
+      { status: response.status },
+    );
   return value;
 }
 export type Clock = {

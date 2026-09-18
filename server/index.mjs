@@ -49,8 +49,22 @@ const uploadLocks = new Set(),
   rates = new Map();
 // Operator console: one line per session milestone so field-test progress is
 // visible in the worker terminal. Never log tokens, invites, or paths.
-const milestone = (msg) =>
+const milestone = (msg) => {
   console.log(`[${new Date().toLocaleTimeString('en-GB')}] \u25B8 ${msg}`);
+  try {
+    appendFileSync(join(data, 'worker.log'), `${new Date().toISOString()} ${msg}\n`);
+  } catch {}
+};
+// Structured pilot telemetry (local JSONL, one object per line). Insight only:
+// never tokens, invites, or filesystem paths.
+const event = (type, fields = {}) => {
+  try {
+    appendFileSync(
+      join(data, 'events.jsonl'),
+      JSON.stringify({ at: new Date().toISOString(), event: type, ...fields }) + '\n',
+    );
+  } catch {}
+};
 let rendering = false;
 function fail(status, message) {
   throw Object.assign(new Error(message), { status });
@@ -270,6 +284,7 @@ async function handler(req, res) {
       db.put('session', s);
       const { m, credential } = makeMember(s.id, b.displayName, 'host');
       milestone(`session "${s.name}" created by ${m.name} (${s.sport})`);
+      event('session_created', { sessionId: s.id, sport: s.sport, ua: req.headers['user-agent'] });
       return send(res, 201, { session: snapshot(s, m), token: credential });
     }
     if (method === 'POST' && url.pathname === '/api/join') {
@@ -284,6 +299,7 @@ async function handler(req, res) {
         fail(409, 'This pilot session already has 20 participants.');
       const { m, credential } = makeMember(s.id, b.displayName, 'guest');
       milestone(`${m.name} joined "${s.name}" (${db.list('member', s.id).length} participants)`);
+      event('member_joined', { sessionId: s.id, memberId: m.id, participants: db.list('member', s.id).length, ua: req.headers['user-agent'] });
       return send(res, 201, { session: snapshot(s, m), token: credential });
     }
     if (parts[0] === 'api' && parts[1] === 'sessions' && parts[2]) {
@@ -320,6 +336,7 @@ async function handler(req, res) {
           s.take++;
           s.armedIds = ready.map((x) => x.id);
           milestone(`take ${s.take} starting in 8s on "${s.name}" with ${ready.length} camera(s)`);
+          event('take_start', { sessionId: s.id, take: s.take, cameras: ready.length, clockErrors: ready.map((x) => x.clockError ?? null) });
         } else if (b.action === 'downloads') {
           if (typeof b.allowAll !== 'boolean')
             fail(400, 'Send allowAll true or false.');
@@ -327,11 +344,13 @@ async function handler(req, res) {
           milestone(
             `downloads ${s.allowAllDownloads ? 'opened to all participants' : 'restricted to own footage'} on "${s.name}"`,
           );
+          event('downloads_policy', { sessionId: s.id, allowAll: s.allowAllDownloads });
         } else if (b.action === 'stop') {
           if (s.status !== 'recording') fail(409, 'No take is recording.');
           s.stopAt = Date.now() + 1500;
           s.status = 'stopped';
           milestone(`take ${s.take} stopped on "${s.name}" \u2014 waiting for uploads`);
+          event('take_stop', { sessionId: s.id, take: s.take });
         } else fail(400, 'Unknown control action.');
         db.put('session', s);
         return send(res, 200, snapshot(s, m));
@@ -393,6 +412,7 @@ async function handler(req, res) {
         if (anchors) u.clockAnchors = anchors;
         writeFileSync(u.path, Buffer.alloc(0));
         db.put('upload', u);
+        event('upload_create', { sessionId: s.id, uploadId: id, memberId: m.id, streaming: size === null, declaredBytes: size, ua: req.headers['user-agent'] });
         return send(res, 201, { id, offset: 0, status: u.status });
       }
       if (method === 'POST' && action === 'retry-take') {
@@ -503,6 +523,7 @@ async function handler(req, res) {
         db.put('job', j);
         void work();
         milestone(`edit queued: take ${j.takeNumber} (${j.style}, ${j.aspect}, ${j.scope})`);
+        event('edit_queued', { sessionId: s.id, jobId: j.id, style: j.style, scope: j.scope, aspect: j.aspect, requestedSec: j.duration, clips: clips.length });
         return send(res, 202, j);
       }
       if (method === 'DELETE' && !action) {
@@ -598,6 +619,21 @@ async function handler(req, res) {
           u.status = 'complete';
           db.put('upload', u);
           milestone(`upload complete: "${c.name}" (${Math.round(info.duration)}s, ${Math.round(u.size / 1024 ** 2)} MB) \u2014 ${db.list('clip', u.sessionId).length} clip(s) in session`);
+          event('upload_complete', {
+            sessionId: u.sessionId,
+            uploadId: u.id,
+            memberId: u.ownerId,
+            bytes: u.size,
+            videoSec: Math.round(info.duration * 10) / 10,
+            wallMs: Date.now() - u.createdAt,
+            effectiveMbps: +((u.size * 8) / 1e6 / Math.max(0.001, (Date.now() - u.createdAt) / 1000)).toFixed(2),
+            mime: info.mime,
+            width: info.width,
+            height: info.height,
+            clockErrorMs: u.clockError,
+            marks: u.marks.length,
+            anchors: (u.clockAnchors || []).length,
+          });
           const { path, ...safe } = c;
           return send(res, 201, {
             ...safe,
@@ -757,6 +793,7 @@ async function work() {
   job.status = 'rendering';
   db.put('job', job);
   milestone(`rendering take ${job.takeNumber} (${job.style})\u2026`);
+  const renderStarted = Date.now();
   try {
     const reserved =
       db.list('upload').reduce((sum, u) => sum + u.size, 0) +
@@ -787,8 +824,10 @@ async function work() {
     });
     db.put('job', job);
     milestone(`render done: take ${job.takeNumber} (${Math.round(job.duration)}s MP4 ready)`);
+    event('render_done', { sessionId: job.sessionId, jobId: job.id, style: job.style, wallMs: Date.now() - renderStarted, outSec: Math.round(job.duration * 10) / 10, entries: job.plan?.entries?.length });
   } catch (e) {
     console.error('Render failed:', e.message);
+    event('render_failed', { sessionId: job.sessionId, jobId: job.id, style: job.style, message: e.message.slice(0, 300) });
     job.status = 'failed';
     job.error =
       'This edit could not be rendered. Check source videos and worker logs, then create another edit.';
